@@ -6,14 +6,17 @@ const { spawn } = require("child_process");
 
 const router = express.Router();
 
-const UPLOAD_DIR = path.join(__dirname, "..", "uploads", "mri");
+const UPLOAD_DIR = path.join(__dirname, "..", "uploads", "xai");
+const OUTPUT_DIR = path.join(__dirname, "..", "public", "explanations");
+
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, UPLOAD_DIR),
   filename: (_, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, `mri_${Date.now()}${ext}`);
+    cb(null, `xai_${Date.now()}${ext}`);
   },
 });
 
@@ -34,12 +37,14 @@ const PYTHON_EXE =
     ? path.join(__dirname, "..", "pyenv", "Scripts", "python.exe")
     : "python3";
 
-// UPDATED MRI YOLO MODEL PATH
-const MRI_MODEL_PATH = path.join(__dirname, "..", "models", "Yolo(MRI).pt");
+const PY_SCRIPT = path.join(__dirname, "..", "python", "explain_image.py");
 
-const PY_SCRIPT = path.join(__dirname, "..", "python", "predict_mri.py");
+// Adjust these paths to your actual files
+const XRAY_GATE_MODEL = path.join(__dirname, "..", "models", "gate.pt");
+const XRAY_PRED_MODEL = path.join(__dirname, "..", "models", "best.pt");
+const MRI_PRED_MODEL = path.join(__dirname, "..", "models", "Yolo(MRI).pt");
 
-router.post("/api/predict/mri", upload.single("image"), (req, res) => {
+router.post("/api/explain/image", upload.single("image"), (req, res) => {
   try {
     if (!req.file?.path) {
       return res.status(400).json({
@@ -48,29 +53,45 @@ router.post("/api/predict/mri", upload.single("image"), (req, res) => {
       });
     }
 
-    if (!fs.existsSync(MRI_MODEL_PATH)) {
+    const mode = String(req.body.mode || "").trim().toLowerCase();
+    const method = String(req.body.method || "").trim().toLowerCase();
+
+    if (!["xray", "mri"].includes(mode)) {
       try { fs.unlinkSync(req.file.path); } catch (_) {}
-      return res.status(500).json({
+      return res.status(400).json({
         ok: false,
-        error: "MRI model file not found",
-        modelPath: MRI_MODEL_PATH,
+        error: "Invalid mode. Use xray or mri.",
       });
     }
 
-    if (!fs.existsSync(PY_SCRIPT)) {
+    if (!["gradcam", "lime", "shap"].includes(method)) {
       try { fs.unlinkSync(req.file.path); } catch (_) {}
-      return res.status(500).json({
+      return res.status(400).json({
         ok: false,
-        error: "MRI python script not found",
-        scriptPath: PY_SCRIPT,
+        error: "Invalid method. Use gradcam, lime, or shap.",
       });
     }
 
     const imgPath = path.resolve(req.file.path);
-    const modelAbs = path.resolve(MRI_MODEL_PATH);
     const scriptAbs = path.resolve(PY_SCRIPT);
+    const outputAbs = path.resolve(OUTPUT_DIR);
 
-    const py = spawn(PYTHON_EXE, [scriptAbs, modelAbs, imgPath], {
+    const args = [
+      scriptAbs,
+      "--mode", mode,
+      "--method", method,
+      "--image", imgPath,
+      "--output-dir", outputAbs,
+    ];
+
+    if (mode === "xray") {
+      args.push("--pred-model", path.resolve(XRAY_PRED_MODEL));
+      args.push("--gate-model", path.resolve(XRAY_GATE_MODEL));
+    } else {
+      args.push("--pred-model", path.resolve(MRI_PRED_MODEL));
+    }
+
+    const py = spawn(PYTHON_EXE, args, {
       cwd: path.join(__dirname, ".."),
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -85,7 +106,7 @@ router.post("/api/predict/mri", upload.single("image"), (req, res) => {
       try { fs.unlinkSync(imgPath); } catch (_) {}
       return res.status(500).json({
         ok: false,
-        error: "Failed to start MRI python process",
+        error: "Failed to start XAI python process",
         details: err.message,
       });
     });
@@ -96,7 +117,7 @@ router.post("/api/predict/mri", upload.single("image"), (req, res) => {
       if (code !== 0) {
         return res.status(500).json({
           ok: false,
-          error: "MRI python process failed",
+          error: "XAI python process failed",
           exitCode: code,
           stderr: stderr || null,
           stdout: stdout || null,
@@ -110,18 +131,14 @@ router.post("/api/predict/mri", upload.single("image"), (req, res) => {
         const data = JSON.parse(jsonLine);
 
         if (data.ok === false) {
-          return res.status(500).json({
-            ok: false,
-            error: data.error || "MRI prediction failed",
-            details: data.details || null,
-          });
+          return res.status(500).json(data);
         }
 
         return res.status(200).json(data);
       } catch (e) {
         return res.status(500).json({
           ok: false,
-          error: "MRI prediction failed",
+          error: "Invalid JSON output from XAI python script",
           details: stderr || stdout || e.message,
         });
       }

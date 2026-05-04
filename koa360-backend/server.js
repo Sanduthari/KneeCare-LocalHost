@@ -2,12 +2,16 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const dotenv = require("dotenv");
+const path = require("path");
+
 dotenv.config();
 
 const app = express();
-
 app.use(express.json());
 app.use(cors());
+
+// Serve explanation images
+app.use("/explanations", express.static(path.join(__dirname, "public", "explanations")));
 
 const MONGO_URI =
   process.env.MONGO_URI ||
@@ -34,6 +38,7 @@ const fusionPredictRoutes = require("./routes/fusionPredict");
 const monthlySeverityRoutes = require("./routes/monthlySeverityRoutes");
 const vagSeverityLatest = require("./routes/vagSeverityLatest");
 const mriRoutes = require("./routes/mriRoutes");
+const xaiRoutes = require("./routes/xaiRoutes"); 
 
 // Use Routes
 app.use("/", authRoutes);
@@ -49,6 +54,7 @@ app.use("/", vagSeverityLatest);
 app.use(xrayPredictRoutes);
 app.use("/api/fusion", fusionPredictRoutes);
 app.use(mriRoutes);
+app.use(xaiRoutes); 
 
 app.get("/", (req, res) => {
   res.send("Knee Monitor API is running");

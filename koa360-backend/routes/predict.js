@@ -5,15 +5,15 @@ const path = require("path");
 const router = express.Router();
 
 router.post("/api/predict", (req, res) => {
-  const pythonExe =
-    process.platform === "win32"
-      ? path.join(__dirname, "..", "pyenv", "Scripts", "python.exe")
-      : "python3";
+  const pythonExe = "python"; 
 
   const scriptPath = path.join(__dirname, "..", "predict.py");
   const cwd = path.join(__dirname, "..");
 
-  const py = spawn(pythonExe, [scriptPath], { cwd });
+  const py = spawn(pythonExe, [scriptPath], {
+  cwd,
+  shell: true,
+});
 
   py.stdin.write(JSON.stringify({ features: req.body.features }));
   py.stdin.end();

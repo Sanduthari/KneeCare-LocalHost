@@ -1,45 +1,86 @@
 import sys
 import json
 import os
-import numpy as np
-from PIL import Image
-import tensorflow as tf
-from tensorflow.keras.models import load_model
-from tensorflow.keras.applications.resnet50 import preprocess_input
+from ultralytics import YOLO
 
-IMG_SIZE = (224, 224)
-CLASS_LABELS = ["Normal", "Osteoarthritis"]
-
-
-def load_image(image_path: str):
-    img = Image.open(image_path).convert("RGB")
-    img = img.resize(IMG_SIZE)
-    arr = np.array(img, dtype=np.float32)
-    arr = preprocess_input(arr)
-    arr = np.expand_dims(arr, axis=0)
-    return arr
+# Your trained MRI model classes
+# class_to_idx = {"normal": 0, "abnormal": 1}
+CLASS_LABEL_MAP = {
+    "normal": "Normal",
+    "abnormal": "Osteoarthritis"
+}
 
 
-def decode_prediction(pred):
-    pred = np.array(pred)
+def normalize_label(label: str) -> str:
+    return str(label).strip().lower().replace("_", " ").replace("-", " ")
 
-    if pred.ndim == 2 and pred.shape[1] == 1:
-        p = float(pred[0][0])
-        if p >= 0.5:
-            return "Osteoarthritis", p, 1
-        return "Normal", 1.0 - p, 0
 
-    if pred.ndim == 2 and pred.shape[1] >= 2:
-        idx = int(np.argmax(pred[0]))
-        conf = float(pred[0][idx])
-        label = CLASS_LABELS[idx] if idx < len(CLASS_LABELS) else str(idx)
-        return label, conf, idx
+def load_model_safe(model_path: str):
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"MRI model not found: {model_path}")
+    return YOLO(model_path)
 
-    flat = pred.flatten()
-    p = float(flat[0])
-    if p >= 0.5:
-        return "Osteoarthritis", p, 1
-    return "Normal", 1.0 - p, 0
+
+def run_yolo_prediction(model, image_path: str):
+    results = model.predict(
+        source=image_path,
+        imgsz=224,      # same as your training size
+        save=False,
+        verbose=False
+    )
+
+    if not results:
+        return {
+            "ok": False,
+            "error": "No results returned by MRI model"
+        }
+
+    r0 = results[0]
+    names = getattr(r0, "names", None) or getattr(model, "names", {})
+
+    # YOLO classification output
+    if getattr(r0, "probs", None) is not None and r0.probs is not None:
+        top_idx = int(r0.probs.top1)
+        top_conf = float(r0.probs.top1conf)
+
+        if isinstance(names, dict):
+            label = names.get(top_idx, str(top_idx))
+        else:
+            label = str(top_idx)
+
+        return {
+            "ok": True,
+            "type": "classification",
+            "label": label,
+            "confidence": top_conf,
+            "classId": top_idx
+        }
+
+    return {
+        "ok": False,
+        "error": "MRI model did not return classification probabilities"
+    }
+
+
+def format_final_prediction(pred_result: dict):
+    raw_label = str(pred_result.get("label", "")).strip()
+    normalized = normalize_label(raw_label)
+    conf = float(pred_result.get("confidence", 0.0))
+
+    # Map abnormal -> Osteoarthritis, normal -> Normal
+    display_label = CLASS_LABEL_MAP.get(normalized, raw_label)
+
+    return {
+        "ok": True,
+        "validImage": True,
+        "modality": "mri",
+        "message": "MRI prediction successful",
+        "type": pred_result.get("type", "classification"),
+        "label": display_label,
+        "confidence": conf,
+        "classId": pred_result.get("classId", None),
+        "rawLabel": raw_label
+    }
 
 
 def main():
@@ -68,42 +109,20 @@ def main():
             }))
             return
 
-        try:
-            model = load_model(model_path, compile=False)
-        except Exception as e:
-            print(json.dumps({
-                "ok": False,
-                "error": "Failed to load MRI model",
-                "details": str(e)
-            }))
+        model = load_model_safe(model_path)
+        pred_result = run_yolo_prediction(model, image_path)
+
+        if not pred_result.get("ok"):
+            print(json.dumps(pred_result))
             return
 
-        try:
-            x = load_image(image_path)
-            pred = model.predict(x, verbose=0)
-            label, confidence, class_id = decode_prediction(pred)
-
-            print(json.dumps({
-                "ok": True,
-                "validImage": True,
-                "modality": "mri",
-                "message": "MRI prediction successful",
-                "type": "classification",
-                "label": label,
-                "confidence": confidence,
-                "classId": class_id
-            }))
-        except Exception as e:
-            print(json.dumps({
-                "ok": False,
-                "error": "MRI prediction failed",
-                "details": str(e)
-            }))
+        print(json.dumps(format_final_prediction(pred_result)))
 
     except Exception as e:
         print(json.dumps({
             "ok": False,
-            "error": str(e)
+            "error": "MRI prediction failed",
+            "details": str(e)
         }))
 
 
